@@ -1,0 +1,81 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "desktop-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}-vcpkg",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "GAME_BOOTSTRAP_VCPKG": true,
+        "GAME_VCPKG_ROOT": "${sourceDir}/.vcpkg",
+        "GAME_VCPKG_INSTALLED_DIR": "${sourceDir}/.vcpkg/vcpkg_installed"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "desktop-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": "desktop-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-debug",
+      "displayName": "Build Debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "build-release",
+      "displayName": "Build Release",
+      "configurePreset": "release"
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "workflow-debug",
+      "displayName": "Configure + Build Debug",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "debug"
+        },
+        {
+          "type": "build",
+          "name": "build-debug"
+        }
+      ]
+    },
+    {
+      "name": "workflow-release",
+      "displayName": "Configure + Build Release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "release"
+        },
+        {
+          "type": "build",
+          "name": "build-release"
+        }
+      ]
+    }
+  ]
+}
