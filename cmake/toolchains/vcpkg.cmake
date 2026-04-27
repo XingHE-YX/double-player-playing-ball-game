@@ -15,6 +15,21 @@ cmake_path(ABSOLUTE_PATH GAME_VCPKG_INSTALLED_DIR BASE_DIRECTORY "${GAME_PROJECT
 set(GAME_VCPKG_ROOT "${GAME_VCPKG_ROOT_ABS}" CACHE PATH "Path to the project-local vcpkg checkout" FORCE)
 set(GAME_VCPKG_INSTALLED_DIR "${GAME_VCPKG_INSTALLED_DIR_ABS}" CACHE PATH "Path to the project-local vcpkg installed tree" FORCE)
 
+function(game_run_git)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${GAME_VCPKG_ROOT}" ${ARGN}
+        RESULT_VARIABLE game_git_result
+        OUTPUT_VARIABLE game_git_stdout
+        ERROR_VARIABLE game_git_stderr
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
+    )
+
+    set(GAME_GIT_RESULT "${game_git_result}" PARENT_SCOPE)
+    set(GAME_GIT_STDOUT "${game_git_stdout}" PARENT_SCOPE)
+    set(GAME_GIT_STDERR "${game_git_stderr}" PARENT_SCOPE)
+endfunction()
+
 if(APPLE)
     if(DEFINED ENV{PKG_CONFIG} AND EXISTS "$ENV{PKG_CONFIG}")
         set(GAME_PKG_CONFIG_EXECUTABLE "$ENV{PKG_CONFIG}")
@@ -37,21 +52,33 @@ if(APPLE)
     set(ENV{PKG_CONFIG} "${GAME_PKG_CONFIG_EXECUTABLE}")
 endif()
 
-if(NOT EXISTS "${GAME_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-    if(NOT GAME_BOOTSTRAP_VCPKG)
+if(NOT GAME_BOOTSTRAP_VCPKG)
+    if(NOT EXISTS "${GAME_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
         message(FATAL_ERROR
             "vcpkg was not found at ${GAME_VCPKG_ROOT} and GAME_BOOTSTRAP_VCPKG is OFF.\n"
             "Run CMake with -DGAME_BOOTSTRAP_VCPKG=ON or provide a populated GAME_VCPKG_ROOT."
         )
     endif()
-
+else()
     find_program(GIT_EXECUTABLE git REQUIRED)
 
     if(EXISTS "${GAME_VCPKG_ROOT}" AND NOT IS_DIRECTORY "${GAME_VCPKG_ROOT}")
         message(FATAL_ERROR "GAME_VCPKG_ROOT points to a file: ${GAME_VCPKG_ROOT}")
     endif()
 
+    if(NOT EXISTS "${GAME_VCPKG_ROOT}")
+        file(MAKE_DIRECTORY "${GAME_VCPKG_ROOT}")
+    endif()
+
     if(NOT EXISTS "${GAME_VCPKG_ROOT}/.git")
+        file(GLOB GAME_VCPKG_ROOT_CONTENTS LIST_DIRECTORIES true "${GAME_VCPKG_ROOT}/*")
+        if(GAME_VCPKG_ROOT_CONTENTS)
+            message(FATAL_ERROR
+                "GAME_VCPKG_ROOT exists but is not a git checkout: ${GAME_VCPKG_ROOT}\n"
+                "Remove that directory and rerun CMake so the local vcpkg clone can be recreated."
+            )
+        endif()
+
         message(STATUS "Cloning vcpkg into ${GAME_VCPKG_ROOT}")
         execute_process(
             COMMAND "${GIT_EXECUTABLE}" clone "${GAME_VCPKG_REPOSITORY}" "${GAME_VCPKG_ROOT}"
@@ -59,26 +86,81 @@ if(NOT EXISTS "${GAME_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
         )
     endif()
 
+    game_run_git(rev-parse --is-inside-work-tree)
+    if(NOT GAME_GIT_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to use ${GAME_VCPKG_ROOT} as a git repository.\n"
+            "${GAME_GIT_STDERR}"
+        )
+    endif()
+
     if(GAME_VCPKG_GIT_REF)
-        message(STATUS "Checking out vcpkg ref ${GAME_VCPKG_GIT_REF}")
-        execute_process(
-            COMMAND "${GIT_EXECUTABLE}" -C "${GAME_VCPKG_ROOT}" checkout "${GAME_VCPKG_GIT_REF}"
-            COMMAND_ERROR_IS_FATAL ANY
+        game_run_git(rev-parse --verify "${GAME_VCPKG_GIT_REF}^{commit}")
+        if(NOT GAME_GIT_RESULT EQUAL 0)
+            message(STATUS "Fetching vcpkg ref ${GAME_VCPKG_GIT_REF}")
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" -C "${GAME_VCPKG_ROOT}" fetch --depth 1 origin "${GAME_VCPKG_GIT_REF}"
+                RESULT_VARIABLE GAME_VCPKG_FETCH_RESULT
+                OUTPUT_VARIABLE GAME_VCPKG_FETCH_STDOUT
+                ERROR_VARIABLE GAME_VCPKG_FETCH_STDERR
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_STRIP_TRAILING_WHITESPACE
+            )
+            if(NOT GAME_VCPKG_FETCH_RESULT EQUAL 0)
+                message(STATUS "Direct ref fetch failed; fetching remote refs from origin")
+                execute_process(
+                    COMMAND "${GIT_EXECUTABLE}" -C "${GAME_VCPKG_ROOT}" fetch --tags origin
+                    COMMAND_ERROR_IS_FATAL ANY
+                )
+            endif()
+            game_run_git(rev-parse --verify "${GAME_VCPKG_GIT_REF}^{commit}")
+            if(NOT GAME_GIT_RESULT EQUAL 0)
+                message(FATAL_ERROR
+                    "Fetched vcpkg ref ${GAME_VCPKG_GIT_REF}, but the commit is still unavailable.\n"
+                    "${GAME_GIT_STDERR}"
+                )
+            endif()
+        endif()
+        set(GAME_VCPKG_TARGET_COMMIT "${GAME_GIT_STDOUT}")
+
+        game_run_git(rev-parse --verify HEAD)
+        set(GAME_VCPKG_HEAD_REF "${GAME_GIT_STDOUT}")
+        if(NOT "${GAME_VCPKG_HEAD_REF}" STREQUAL "${GAME_VCPKG_TARGET_COMMIT}")
+            message(STATUS "Checking out vcpkg ref ${GAME_VCPKG_GIT_REF}")
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" -C "${GAME_VCPKG_ROOT}" checkout --force "${GAME_VCPKG_GIT_REF}"
+                COMMAND_ERROR_IS_FATAL ANY
+            )
+        endif()
+    endif()
+
+    if(NOT EXISTS "${GAME_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+        message(FATAL_ERROR
+            "The local vcpkg checkout at ${GAME_VCPKG_ROOT} is incomplete after checkout.\n"
+            "Remove that directory and rerun CMake."
         )
     endif()
 
     if(WIN32)
         set(GAME_VCPKG_BOOTSTRAP_SCRIPT "${GAME_VCPKG_ROOT}/bootstrap-vcpkg.bat")
-        execute_process(
-            COMMAND cmd /c "${GAME_VCPKG_BOOTSTRAP_SCRIPT}" -disableMetrics
-            COMMAND_ERROR_IS_FATAL ANY
-        )
+        set(GAME_VCPKG_EXECUTABLE "${GAME_VCPKG_ROOT}/vcpkg.exe")
+        if(NOT EXISTS "${GAME_VCPKG_EXECUTABLE}")
+            message(STATUS "Bootstrapping vcpkg executable")
+            execute_process(
+                COMMAND cmd /c "${GAME_VCPKG_BOOTSTRAP_SCRIPT}" -disableMetrics
+                COMMAND_ERROR_IS_FATAL ANY
+            )
+        endif()
     else()
         set(GAME_VCPKG_BOOTSTRAP_SCRIPT "${GAME_VCPKG_ROOT}/bootstrap-vcpkg.sh")
-        execute_process(
-            COMMAND sh "${GAME_VCPKG_BOOTSTRAP_SCRIPT}" -disableMetrics
-            COMMAND_ERROR_IS_FATAL ANY
-        )
+        set(GAME_VCPKG_EXECUTABLE "${GAME_VCPKG_ROOT}/vcpkg")
+        if(NOT EXISTS "${GAME_VCPKG_EXECUTABLE}")
+            message(STATUS "Bootstrapping vcpkg executable")
+            execute_process(
+                COMMAND sh "${GAME_VCPKG_BOOTSTRAP_SCRIPT}" -disableMetrics
+                COMMAND_ERROR_IS_FATAL ANY
+            )
+        endif()
     endif()
 endif()
 
